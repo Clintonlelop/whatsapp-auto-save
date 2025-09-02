@@ -1,10 +1,9 @@
-const makeWASocket = require('@adiwajshing/baileys').default;
-const { useSingleFileAuthState } = require('@adiwajshing/baileys');
+const makeWASocket = require('@whiskeysockets/baileys').default;
+const { useSingleFileAuthState } = require('@whiskeysockets/baileys');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const { makeVCard } = require('vcard4-ts');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,7 +17,12 @@ let contacts = [];
 
 // Load existing contacts
 if (fs.existsSync(contactsFile)) {
-    contacts = JSON.parse(fs.readFileSync(contactsFile, 'utf-8'));
+    try {
+        contacts = JSON.parse(fs.readFileSync(contactsFile, 'utf-8'));
+    } catch (e) {
+        console.log('Error loading contacts:', e.message);
+        contacts = [];
+    }
 }
 
 // Initialize WhatsApp socket
@@ -34,7 +38,6 @@ sock.ev.on('connection.update', (update) => {
         const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== 401;
         if (shouldReconnect) {
             console.log('Reconnecting...');
-            initWhatsApp();
         }
     } else if (connection === 'open') {
         console.log('WhatsApp bot is connected!');
@@ -68,25 +71,20 @@ sock.ev.on('messages.upsert', async ({ messages }) => {
     }
 });
 
-// Generate VCF file from contacts
+// Simple vCard generator
 function generateVCF() {
-    const vcards = contacts.map(contact => {
-        return makeVCard({
-            version: '4.0',
-            name: {
-                familyName: contact.pushName
-            },
-            telephone: [{
-                value: contact.number,
-                parameters: {
-                    type: ['CELL']
-                }
-            }]
-        });
-    }).join('\n');
+    let vcards = '';
+    
+    contacts.forEach(contact => {
+        vcards += `BEGIN:VCARD
+VERSION:3.0
+FN:${contact.pushName}
+TEL;TYPE=CELL:${contact.number}
+END:VCARD\n`;
+    });
 
     fs.writeFileSync('contacts.vcf', vcards);
-    console.log('contacts.vcf updated');
+    console.log('contacts.vcf updated with', contacts.length, 'contacts');
 }
 
 // Express server for serving VCF
@@ -97,6 +95,11 @@ app.get('/contacts.vcf', (req, res) => {
         return res.status(401).send('Unauthorized: Invalid password');
     }
     
+    // Generate VCF if file doesn't exist
+    if (!fs.existsSync('contacts.vcf') && contacts.length > 0) {
+        generateVCF();
+    }
+    
     const filePath = path.join(__dirname, 'contacts.vcf');
     res.download(filePath, 'whatsapp_contacts.vcf', (err) => {
         if (err) {
@@ -104,6 +107,11 @@ app.get('/contacts.vcf', (req, res) => {
             res.status(500).send('Error downloading file');
         }
     });
+});
+
+// Health check endpoint
+app.get('/', (req, res) => {
+    res.send('WhatsApp Bot is running! Use /contacts.vcf?pass=lelop to download contacts');
 });
 
 // Generate initial VCF if contacts exist
@@ -116,3 +124,8 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Download contacts at: http://localhost:${PORT}/contacts.vcf?pass=lelop`);
 });
+
+// Save state periodically
+setInterval(() => {
+    saveState();
+}, 10000);
