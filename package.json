@@ -1,26 +1,19 @@
 {
   "name": "whatsapp-bot",
   "version": "1.0.0",
-  "description": "A WhatsApp bot that saves contacts and generates VCF files",
+  "description": "WhatsApp Bot for saving contacts",
   "main": "bot.js",
+  "type": "module",
   "scripts": {
-    "start": "node bot.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node bot.js"
   },
-  "keywords": [
-    "whatsapp",
-    "bot",
-    "vcard",
-    "contacts"
-  ],
-  "author": "Your Name",
-  "license": "MIT",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.1",
-    "express": "^4.19.2",
-    "uuid": "^9.0.0"
+    "@whiskeysockets/baileys": "6.4.0",
+    "express": "4.18.2",
+    "qrcode-terminal": "0.12.0",
+    "uuid": "9.0.1"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   }
 }
