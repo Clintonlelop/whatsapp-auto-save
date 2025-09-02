@@ -7,19 +7,43 @@ import { v4 as uuidv4 } from 'uuid';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Auth state management
-let authState = { creds: null };
+// PROPER auth state structure for Baileys
+let authState = { 
+    creds: {
+        noiseKey: null,
+        signedIdentityKey: null,
+        signedPreKey: null,
+        registrationId: null,
+        advSecretKey: null,
+        nextPreKeyId: null,
+        firstUnuploadedPreKeyId: null,
+        serverHasPreKeys: null,
+        account: null,
+        me: null,
+        signalIdentities: null,
+        platform: null,
+        processedHistoryMessages: null,
+        accountSettings: null,
+        deviceId: null
+    } 
+};
+
 const AUTH_FILE = './auth_info.json';
 
-// Load existing auth
+// Load existing auth PROPERLY
 try {
     if (fs.existsSync(AUTH_FILE)) {
         const authData = fs.readFileSync(AUTH_FILE, 'utf8');
-        authState.creds = JSON.parse(authData);
+        const savedCreds = JSON.parse(authData);
+        
+        // Merge saved credentials with proper structure
+        authState.creds = { ...authState.creds, ...savedCreds };
         console.log('✅ Loaded existing authentication');
+    } else {
+        console.log('🆕 No existing auth found - fresh start');
     }
 } catch (error) {
-    console.log('❌ No existing auth found');
+    console.log('❌ Error loading auth, starting fresh');
 }
 
 // Contacts storage
@@ -36,7 +60,7 @@ try {
     console.log('❌ No existing contacts found');
 }
 
-// Simple logger function that works with Baileys 6.4.0
+// Simple logger that works with Baileys
 const simpleLogger = {
     trace: () => {},
     debug: () => {},
@@ -44,14 +68,14 @@ const simpleLogger = {
     warn: (...args) => console.log('[WARN]', ...args),
     error: (...args) => console.log('[ERROR]', ...args),
     fatal: (...args) => console.log('[FATAL]', ...args),
-    child: () => simpleLogger // This fixes the .child() error
+    child: () => simpleLogger
 };
 
-// Initialize WhatsApp socket
+// Initialize WhatsApp socket with PROPER auth structure
 const sock = makeWASocket.default({
-    auth: authState.creds,
+    auth: authState.creds, // Pass the creds directly
     printQRInTerminal: false,
-    logger: simpleLogger // Use our custom logger
+    logger: simpleLogger
 });
 
 // Handle QR code generation
@@ -68,11 +92,11 @@ sock.ev.on('connection.update', (update) => {
     }
 });
 
-// Save authentication state
+// Save authentication state PROPERLY
 sock.ev.on('creds.update', (creds) => {
-    authState.creds = creds;
     try {
         fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+        console.log('💾 Authentication state saved');
     } catch (error) {
         console.log('❌ Failed to save auth state');
     }
