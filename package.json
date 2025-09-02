@@ -1,1 +1,27 @@
-{ "name": "whatsapp-autosave", "version": "1.0.0", "description": "A WhatsApp bot using Baileys and Express that auto-saves every new number that messages you.", "main": "bot.js", "scripts": { "start": "node bot.js" }, "license": "MIT", "dependencies": { "@adiwajshing/baileys": "latest", "express": "latest" } }
+{
+  "name": "whatsapp-bot",
+  "version": "1.0.0",
+  "description": "A WhatsApp bot that saves contacts and generates VCF files",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "vcard",
+    "contacts"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@adiwajshing/baileys": "latest",
+    "express": "latest",
+    "uuid": "^9.0.0",
+    "vcard4-ts": "^1.0.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
