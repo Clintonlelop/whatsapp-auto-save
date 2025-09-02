@@ -19,7 +19,7 @@ try {
         console.log('✅ Loaded existing authentication');
     }
 } catch (error) {
-    console.log('❌ No existing auth found or invalid auth file');
+    console.log('❌ No existing auth found');
 }
 
 // Contacts storage
@@ -36,16 +36,27 @@ try {
     console.log('❌ No existing contacts found');
 }
 
+// Simple logger function that works with Baileys 6.4.0
+const simpleLogger = {
+    trace: () => {},
+    debug: () => {},
+    info: (...args) => console.log('[INFO]', ...args),
+    warn: (...args) => console.log('[WARN]', ...args),
+    error: (...args) => console.log('[ERROR]', ...args),
+    fatal: (...args) => console.log('[FATAL]', ...args),
+    child: () => simpleLogger // This fixes the .child() error
+};
+
 // Initialize WhatsApp socket
 const sock = makeWASocket.default({
     auth: authState.creds,
-    printQRInTerminal: false, // We'll handle QR manually
-    logger: { level: 'silent' } // Reduce logs for Railway
+    printQRInTerminal: false,
+    logger: simpleLogger // Use our custom logger
 });
 
 // Handle QR code generation
 sock.ev.on('connection.update', (update) => {
-    const { connection, qr, lastDisconnect } = update;
+    const { connection, qr } = update;
     
     if (qr) {
         console.log('🔐 Scan this QR code with WhatsApp:');
@@ -54,11 +65,6 @@ sock.ev.on('connection.update', (update) => {
     
     if (connection === 'open') {
         console.log('✅ WhatsApp connected successfully!');
-        console.log('🤖 Bot is now listening for messages...');
-    }
-    
-    if (connection === 'close') {
-        console.log('❌ Connection closed, please restart the bot');
     }
 });
 
@@ -67,14 +73,13 @@ sock.ev.on('creds.update', (creds) => {
     authState.creds = creds;
     try {
         fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
-        console.log('💾 Authentication state saved');
     } catch (error) {
-        console.log('❌ Failed to save auth state:', error.message);
+        console.log('❌ Failed to save auth state');
     }
 });
 
 // Handle incoming messages
-sock.ev.on('messages.upsert', async ({ messages }) => {
+sock.ev.on('messages.upsert', ({ messages }) => {
     try {
         const message = messages[0];
         
@@ -100,7 +105,7 @@ sock.ev.on('messages.upsert', async ({ messages }) => {
                     
                     // Save contacts to file
                     fs.writeFileSync(CONTACTS_FILE, JSON.stringify(contacts, null, 2));
-                    console.log(`📞 New contact saved: ${pushName} (${number})`);
+                    console.log(`📞 New contact: ${pushName} (${number})`);
                     
                     // Generate updated VCF file
                     generateVCF();
@@ -108,7 +113,7 @@ sock.ev.on('messages.upsert', async ({ messages }) => {
             }
         }
     } catch (error) {
-        console.log('❌ Error processing message:', error.message);
+        console.log('❌ Error processing message');
     }
 });
 
@@ -122,77 +127,48 @@ function generateVCF() {
 VERSION:3.0
 FN:${contact.pushName.replace(/[^\w\s]/gi, ' ').trim()}
 TEL;TYPE=CELL:${contact.number}
-NOTE:Saved via WhatsApp Bot
-END:VCARD\n\n`;
+END:VCARD\n`;
         });
         
         fs.writeFileSync('./contacts.vcf', vcfContent);
-        console.log(`📇 VCF file updated with ${contacts.length} contacts`);
+        console.log(`📇 VCF updated with ${contacts.length} contacts`);
         
     } catch (error) {
-        console.log('❌ Error generating VCF:', error.message);
+        console.log('❌ Error generating VCF');
     }
 }
 
 // Express server routes
 app.get('/contacts.vcf', (req, res) => {
     try {
-        const password = req.query.pass;
-        
-        if (password !== 'lelop') {
-            return res.status(401).json({ 
-                error: 'Unauthorized', 
-                message: 'Invalid password. Use ?pass=lelop' 
-            });
+        if (req.query.pass !== 'lelop') {
+            return res.status(401).send('Invalid password. Use ?pass=lelop');
         }
         
-        if (!fs.existsSync('./contacts.vcf')) {
+        if (!fs.existsSync('./contacts.vcf') && contacts.length > 0) {
             generateVCF();
         }
         
-        res.setHeader('Content-Type', 'text/vcard');
-        res.setHeader('Content-Disposition', 'attachment; filename="whatsapp_contacts.vcf"');
-        
-        const vcfData = fs.readFileSync('./contacts.vcf', 'utf8');
-        res.send(vcfData);
+        res.download('./contacts.vcf', 'whatsapp_contacts.vcf');
         
     } catch (error) {
-        res.status(500).json({ 
-            error: 'Server Error', 
-            message: error.message 
-        });
+        res.status(500).send('Server error');
     }
 });
 
 app.get('/', (req, res) => {
-    res.json({
-        status: 'online',
-        message: 'WhatsApp Bot is running!',
-        endpoints: {
-            download_contacts: '/contacts.vcf?pass=lelop',
-            total_contacts: contacts.length
-        }
-    });
-});
-
-// Health check endpoint for Railway
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+    res.send(`
+        <h1>WhatsApp Bot is running! ✅</h1>
+        <p>Total contacts: ${contacts.length}</p>
+        <p><a href="/contacts.vcf?pass=lelop">Download Contacts VCF</a></p>
+    `);
 });
 
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📋 Download contacts: http://your-railway-url.railway.app/contacts.vcf?pass=lelop`);
     
-    // Generate initial VCF if contacts exist
-    if (contacts.length > 0 && !fs.existsSync('./contacts.vcf')) {
+    if (contacts.length > 0) {
         generateVCF();
     }
-});
-
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-    console.log('🛑 Shutting down gracefully...');
-    process.exit(0);
 });
