@@ -16,10 +16,9 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "@adiwajshing/baileys": "latest",
-    "express": "latest",
-    "uuid": "^9.0.0",
-    "vcard4-ts": "^1.0.2"
+    "@whiskeysockets/baileys": "^6.6.1",
+    "express": "^4.19.2",
+    "uuid": "^9.0.0"
   },
   "engines": {
     "node": ">=14.0.0"
