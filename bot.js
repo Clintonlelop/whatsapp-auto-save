@@ -1,50 +1,14 @@
-import makeWASocket from '@whiskeysockets/baileys';
-import express from 'express';
-import fs from 'fs';
-import qrcode from 'qrcode-terminal';
-import { v4 as uuidv4 } from 'uuid';
+const { default: makeWASocket, useSingleFileAuthState } = require('@whiskeysockets/baileys');
+const express = require('express');
+const fs = require('fs');
+const qrcode = require('qrcode-terminal');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// PROPER auth state structure for Baileys
-let authState = { 
-    creds: {
-        noiseKey: null,
-        signedIdentityKey: null,
-        signedPreKey: null,
-        registrationId: null,
-        advSecretKey: null,
-        nextPreKeyId: null,
-        firstUnuploadedPreKeyId: null,
-        serverHasPreKeys: null,
-        account: null,
-        me: null,
-        signalIdentities: null,
-        platform: null,
-        processedHistoryMessages: null,
-        accountSettings: null,
-        deviceId: null
-    } 
-};
-
-const AUTH_FILE = './auth_info.json';
-
-// Load existing auth PROPERLY
-try {
-    if (fs.existsSync(AUTH_FILE)) {
-        const authData = fs.readFileSync(AUTH_FILE, 'utf8');
-        const savedCreds = JSON.parse(authData);
-        
-        // Merge saved credentials with proper structure
-        authState.creds = { ...authState.creds, ...savedCreds };
-        console.log('✅ Loaded existing authentication');
-    } else {
-        console.log('🆕 No existing auth found - fresh start');
-    }
-} catch (error) {
-    console.log('❌ Error loading auth, starting fresh');
-}
+// PROPER auth state with stable version
+const { state, saveState } = useSingleFileAuthState('./auth_info.json');
 
 // Contacts storage
 const CONTACTS_FILE = './contacts.json';
@@ -60,25 +24,14 @@ try {
     console.log('❌ No existing contacts found');
 }
 
-// Simple logger that works with Baileys
-const simpleLogger = {
-    trace: () => {},
-    debug: () => {},
-    info: (...args) => console.log('[INFO]', ...args),
-    warn: (...args) => console.log('[WARN]', ...args),
-    error: (...args) => console.log('[ERROR]', ...args),
-    fatal: (...args) => console.log('[FATAL]', ...args),
-    child: () => simpleLogger
-};
-
-// Initialize WhatsApp socket with PROPER auth structure
-const sock = makeWASocket.default({
-    auth: authState.creds, // Pass the creds directly
+// Initialize WhatsApp socket
+const sock = makeWASocket({
+    auth: state,
     printQRInTerminal: false,
-    logger: simpleLogger
+    logger: { level: 'silent' }
 });
 
-// Handle QR code generation
+// Handle QR code
 sock.ev.on('connection.update', (update) => {
     const { connection, qr } = update;
     
@@ -92,17 +45,10 @@ sock.ev.on('connection.update', (update) => {
     }
 });
 
-// Save authentication state PROPERLY
-sock.ev.on('creds.update', (creds) => {
-    try {
-        fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
-        console.log('💾 Authentication state saved');
-    } catch (error) {
-        console.log('❌ Failed to save auth state');
-    }
-});
+// Save auth state
+sock.ev.on('creds.update', saveState);
 
-// Handle incoming messages
+// Handle messages
 sock.ev.on('messages.upsert', ({ messages }) => {
     try {
         const message = messages[0];
@@ -141,7 +87,7 @@ sock.ev.on('messages.upsert', ({ messages }) => {
     }
 });
 
-// Generate VCF file function
+// Generate VCF
 function generateVCF() {
     try {
         let vcfContent = '';
@@ -162,7 +108,7 @@ END:VCARD\n`;
     }
 }
 
-// Express server routes
+// Express server
 app.get('/contacts.vcf', (req, res) => {
     try {
         if (req.query.pass !== 'lelop') {
