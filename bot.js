@@ -1,144 +1,69 @@
-const { default: makeWASocket, useSingleFileAuthState } = require('@whiskeysockets/baileys');
-const express = require('express');
-const fs = require('fs');
-const qrcode = require('qrcode-terminal');
-const { v4: uuidv4 } = require('uuid');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@adiwajshing/baileys");
+const express = require("express");
+const fs = require("fs");
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const SAVED_NUMBERS_FILE = "saved_numbers.json";
 
-// PROPER auth state with stable version
-const { state, saveState } = useSingleFileAuthState('./auth_info.json');
-
-// Contacts storage
-const CONTACTS_FILE = './contacts.json';
-let contacts = [];
-
-try {
-    if (fs.existsSync(CONTACTS_FILE)) {
-        const contactsData = fs.readFileSync(CONTACTS_FILE, 'utf8');
-        contacts = JSON.parse(contactsData);
-        console.log(`✅ Loaded ${contacts.length} existing contacts`);
+// Helper to load and save numbers
+function loadSavedNumbers() {
+    if (!fs.existsSync(SAVED_NUMBERS_FILE)) return [];
+    try {
+        return JSON.parse(fs.readFileSync(SAVED_NUMBERS_FILE));
+    } catch {
+        return [];
     }
-} catch (error) {
-    console.log('❌ No existing contacts found');
+}
+function saveNumbers(numbers) {
+    fs.writeFileSync(SAVED_NUMBERS_FILE, JSON.stringify(numbers, null, 2));
 }
 
-// Initialize WhatsApp socket
-const sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: false,
-    logger: { level: 'silent' }
-});
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true
+    });
 
-// Handle QR code
-sock.ev.on('connection.update', (update) => {
-    const { connection, qr } = update;
-    
-    if (qr) {
-        console.log('🔐 Scan this QR code with WhatsApp:');
-        qrcode.generate(qr, { small: true });
-    }
-    
-    if (connection === 'open') {
-        console.log('✅ WhatsApp connected successfully!');
-    }
-});
+    sock.ev.on("creds.update", saveCreds);
 
-// Save auth state
-sock.ev.on('creds.update', saveState);
-
-// Handle messages
-sock.ev.on('messages.upsert', ({ messages }) => {
-    try {
-        const message = messages[0];
-        
-        if (!message.key.fromMe && message.message) {
-            const sender = message.key.remoteJid;
-            
-            if (sender.endsWith('@s.whatsapp.net')) {
-                const number = sender.replace('@s.whatsapp.net', '');
-                const pushName = message.pushName || 'Unknown Contact';
-                
-                // Check if contact already exists
-                const contactExists = contacts.some(contact => contact.number === number);
-                
-                if (!contactExists) {
-                    const newContact = {
-                        id: uuidv4(),
-                        number: number,
-                        pushName: pushName,
-                        timestamp: new Date().toISOString()
-                    };
-                    
-                    contacts.push(newContact);
-                    
-                    // Save contacts to file
-                    fs.writeFileSync(CONTACTS_FILE, JSON.stringify(contacts, null, 2));
-                    console.log(`📞 New contact: ${pushName} (${number})`);
-                    
-                    // Generate updated VCF file
-                    generateVCF();
+    sock.ev.on("messages.upsert", async ({ messages }) => {
+        for (const msg of messages) {
+            if (!msg.key.fromMe && msg.key.remoteJid.endsWith("@s.whatsapp.net")) {
+                const phone = msg.key.remoteJid.split("@")[0];
+                let numbers = loadSavedNumbers();
+                if (!numbers.includes(phone)) {
+                    numbers.push(phone);
+                    saveNumbers(numbers);
+                    console.log(`Saved new number: ${phone}`);
                 }
             }
         }
-    } catch (error) {
-        console.log('❌ Error processing message');
-    }
-});
+    });
 
-// Generate VCF
-function generateVCF() {
-    try {
-        let vcfContent = '';
-        
-        contacts.forEach(contact => {
-            vcfContent += `BEGIN:VCARD
-VERSION:3.0
-FN:${contact.pushName.replace(/[^\w\s]/gi, ' ').trim()}
-TEL;TYPE=CELL:${contact.number}
-END:VCARD\n`;
-        });
-        
-        fs.writeFileSync('./contacts.vcf', vcfContent);
-        console.log(`📇 VCF updated with ${contacts.length} contacts`);
-        
-    } catch (error) {
-        console.log('❌ Error generating VCF');
-    }
+    sock.ev.on("connection.update", (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === "close") {
+            if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+                startBot();
+            } else {
+                console.log("Logged out.");
+            }
+        }
+    });
 }
 
-// Express server
-app.get('/contacts.vcf', (req, res) => {
-    try {
-        if (req.query.pass !== 'lelop') {
-            return res.status(401).send('Invalid password. Use ?pass=lelop');
-        }
-        
-        if (!fs.existsSync('./contacts.vcf') && contacts.length > 0) {
-            generateVCF();
-        }
-        
-        res.download('./contacts.vcf', 'whatsapp_contacts.vcf');
-        
-    } catch (error) {
-        res.status(500).send('Server error');
-    }
+// Express server for health/status
+const app = express();
+
+app.get("/", (req, res) => {
+    res.send("WhatsApp Auto-Save bot is running.");
+});
+app.get("/numbers", (req, res) => {
+    res.json(loadSavedNumbers());
 });
 
-app.get('/', (req, res) => {
-    res.send(`
-        <h1>WhatsApp Bot is running! ✅</h1>
-        <p>Total contacts: ${contacts.length}</p>
-        <p><a href="/contacts.vcf?pass=lelop">Download Contacts VCF</a></p>
-    `);
-});
-
-// Start server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    
-    if (contacts.length > 0) {
-        generateVCF();
-    }
+    console.log("Express server listening on port", PORT);
+    startBot();
 });
