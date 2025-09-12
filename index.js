@@ -114,3 +114,5 @@ try {
     });
 } catch (err) {
     console.error('Failed to load modules (check npm install):', err);
+    process.exit(1);
+}
