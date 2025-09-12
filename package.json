@@ -1,1 +1,13 @@
-{ "name": "whatsapp-autosave", "version": "1.0.0", "description": "A WhatsApp bot using Baileys and Express that auto-saves every new number that messages you.", "main": "bot.js", "scripts": { "start": "node bot.js" }, "license": "MIT", "dependencies": { "@adiwajshing/baileys": "latest", "express": "latest" } }
+{
+  "name": "whatsapp-message-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@adiwajshing/baileys": "^6.7.9",
+    "express": "^4.19.2",
+    "fast-csv": "^5.0.1"
+  }
+}
