@@ -1,10 +1,4 @@
-FROM node:20-bookworm
-
-# Minimal dependencies for Baileys
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:18
 
 WORKDIR /app
 
@@ -16,4 +10,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
