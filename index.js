@@ -5,6 +5,7 @@ try {
     const path = require('path');
     const fastcsv = require('fast-csv');
     const winston = require('winston');
+    const QRCode = require('qrcode');
 
     const app = express();
     const port = process.env.PORT || 8080;
@@ -13,14 +14,14 @@ try {
     const csvFilePath = path.join(__dirname, 'unsaved_contacts.csv');
     const vcfFilePath = path.join(__dirname, 'unsaved_contacts.vcf');
     const jsonFilePath = path.join(__dirname, 'unsaved_contacts.json');
-    const sessionPath = path.join(__dirname, './session');
+    const qrFilePath = path.join(__dirname, 'qr.png');
 
     // Config
-    const AUTH_TOKEN = process.env.AUTH_TOKEN || 'my-secret-token'; // Set in Railway env
-    const MESSAGE_LIMIT = 100; // Configurable message length
-    const BATCH_SIZE = 10; // Write files every 10 new contacts
-    const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${port}`; // Dynamic Railway URL
-    const PHONE_NUMBER = process.env.PHONE_NUMBER || '1234567890'; // Set in Railway env (no country code)
+    const AUTH_TOKEN = process.env.AUTH_TOKEN || 'my-secret-token';
+    const MESSAGE_LIMIT = 100;
+    const BATCH_SIZE = 10;
+    const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${port}`;
+    const PHONE_NUMBER = process.env.PHONE_NUMBER || '8012345678'; // Replace with your number, no leading 0 or +234
 
     // Logger setup
     const logger = winston.createLogger({
@@ -36,13 +37,12 @@ try {
     });
 
     let status = 'Initializing...';
-    let pairingCode = '';
+    let qrCode = '';
     let unsavedContacts = [];
-    let phoneSet = new Set(); // For fast duplicate checks
-    let pendingWrites = 0; // Track new contacts for batching
-    let sock; // Global socket for pairing
+    let phoneSet = new Set();
+    let pendingWrites = 0;
 
-    // Auth middleware for downloads (query param for phone ease)
+    // Auth middleware
     const basicAuth = (req, res, next) => {
         const token = req.query.token;
         if (!token || token !== AUTH_TOKEN) {
@@ -52,27 +52,16 @@ try {
         next();
     };
 
-    // Clear session function
-    function clearSession() {
-        if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            logger.info('Session cleared');
-        }
-    }
-
     async function saveContacts() {
         try {
-            // Save JSON
             fs.writeFileSync(jsonFilePath, JSON.stringify(unsavedContacts, null, 2));
             logger.info(`JSON saved: ${jsonFilePath}`);
 
-            // Save CSV
             const ws = fs.createWriteStream(csvFilePath);
             fastcsv.write(unsavedContacts, { headers: ['phone', 'name', 'message', 'timestamp'] })
                 .pipe(ws)
                 .on('finish', () => logger.info(`CSV saved: ${csvFilePath}`));
 
-            // Save VCF
             let vcfContent = '';
             unsavedContacts.forEach(c => {
                 vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:${c.name}\nTEL;TYPE=CELL:${c.phone}\nNOTE:From WhatsApp Message: ${c.message}\nEND:VCARD\n`;
@@ -85,36 +74,31 @@ try {
     }
 
     async function startBot() {
-        // Clear stale session if needed (for fresh pairing)
-        if (fs.existsSync(sessionPath)) {
-            clearSession();
-        }
-
-        const { state, saveCreds } = await useMultiFileAuthState('./session');
-        sock = makeWASocket({
+        const { state, saveCreds } = await useMultiFileAuthState('./session', { phoneNumber: PHONE_NUMBER });
+        const sock = makeWASocket({
             auth: state,
-            syncFullHistory: false,
-            pairingCode: true, // Enable pairing code mode
-            phoneNumber: PHONE_NUMBER // Use env phone number
+            syncFullHistory: false
         });
 
         sock.ev.on('creds.update', saveCreds);
 
         sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr, code } = update;
+            const { connection, lastDisconnect, qr } = update;
             if (qr) {
-                // Fallback to QR if pairing fails
-                status = 'QR Code available at /qr (pairing failed)';
-                logger.info('QR Code generated as fallback');
-            } else if (code) {
-                // Pairing code generated
-                pairingCode = code;
-                status = `Copy pairing code at /pair: ${pairingCode}`;
-                logger.info(`Pairing code generated: ${pairingCode}`);
+                qrCode = qr;
+                status = 'QR code generated. Scan at /qr. Pairing code not supported in Baileys 7.0.0-rc.2.';
+                logger.info(`QR code generated: ${qr}`);
+                try {
+                    await QRCode.toFile(qrFilePath, qr, { type: 'png', errorCorrectionLevel: 'H' });
+                    logger.info(`QR image saved: ${qrFilePath}`);
+                } catch (err) {
+                    logger.error('QR image generation failed:', err);
+                }
             }
             if (connection === 'open') {
                 status = 'Connected! Listening for incoming private messages...';
-                pairingCode = ''; // Clear pairing code
+                qrCode = '';
+                if (fs.existsSync(qrFilePath)) fs.unlinkSync(qrFilePath);
                 logger.info(status);
             }
             if (connection === 'close') {
@@ -122,8 +106,8 @@ try {
                 status = `Disconnected: ${reason || 'Unknown'}`;
                 logger.error(status, lastDisconnect?.error || '');
                 if (reason === DisconnectReason.loggedOut) {
-                    status = 'Logged out. Clear session and restart.';
-                    clearSession();
+                    status = 'Logged out. Clear ./session folder and restart.';
+                    logger.info(status);
                 } else {
                     setTimeout(startBot, 5000);
                 }
@@ -136,7 +120,7 @@ try {
                     if (!msg.key.fromMe && msg.key.remoteJid.endsWith('@s.whatsapp.net')) {
                         const remoteJid = msg.key.remoteJid;
                         const phone = jidDecode(remoteJid)?.user || remoteJid.split('@')[0];
-                        if (phoneSet.has(phone)) continue; // Skip duplicates
+                        if (phoneSet.has(phone)) continue;
 
                         let contact;
                         for (let attempt = 1; attempt <= 3; attempt++) {
@@ -167,7 +151,7 @@ try {
                             logger.info(`Saved new unsaved number: ${phone} (${entry.name}) - Message: ${entry.message}`);
 
                             if (pendingWrites >= BATCH_SIZE) {
-                                saveContacts();
+                                await saveContacts();
                                 pendingWrites = 0;
                             }
                         }
@@ -180,14 +164,21 @@ try {
     }
 
     // Routes
-    app.get('/', (req, res) => res.send(`<p>Status: ${status}</p><p><a href="/pair">View Pairing Code</a> | <a href="/downloads">View Downloads</a> | <a href="/clear-session">Clear Session (for re-pairing)</a></p>`));
-    app.get('/pair', (req, res) => res.send(`<p>Status: ${status}</p><p>Pairing Code: <strong>${pairingCode || 'Not available. Check logs or try /clear-session'}</strong></p><p>Instructions: Open WhatsApp > Settings > Linked Devices > Link with Phone Number > Enter code.</p>`));
-    app.get('/qr', (req, res) => res.send(`<p>Status: ${status}</p><p>QR fallback if pairing fails. But since we don't generate image, check console logs for QR text.</p>`));
-    app.get('/clear-session', basicAuth, (req, res) => {
-        clearSession();
-        status = 'Session cleared. Restarting bot...';
-        startBot();
-        res.send('Session cleared and bot restarted. Check /pair for new code.');
+    app.get('/', (req, res) => res.send(`<p>Status: ${status}</p><p><a href="/pair">View Pairing Code</a> | <a href="/qr">View QR Code</a> | <a href="/downloads">View Downloads</a></p>`));
+    app.get('/pair', (req, res) => res.send(`<p>Status: ${status}</p><p>Pairing Code: <strong>Not supported in Baileys 7.0.0-rc.2. Use /qr to scan QR code or update to latest Baileys version.</strong></p><p><a href="/">Back to Status</a></p>`));
+    app.get('/qr', (req, res) => {
+        if (qrCode) {
+            res.send(`<p>Status: ${status}</p><p>Scan QR code at <a href="/download/qr?token=${AUTH_TOKEN}">Download QR Code</a> in WhatsApp (Settings > Linked Devices).</p><p><a href="/">Back to Status</a></p>`);
+        } else {
+            res.send(`<p>Status: ${status}</p><p>QR Code: Not available yet. Wait for generation or check logs.</p><p><a href="/">Back to Status</a></p>`);
+        }
+    });
+    app.get('/download/qr', basicAuth, (req, res) => {
+        if (fs.existsSync(qrFilePath)) {
+            res.download(qrFilePath, 'qr.png');
+        } else {
+            res.status(404).send('QR code not available. Check /qr or logs.');
+        }
     });
     app.get('/downloads', (req, res) => {
         const tokenQuery = `?token=${AUTH_TOKEN}`;
@@ -224,7 +215,11 @@ try {
     app.listen(port, () => {
         logger.info(`Server running on port ${port}`);
         logger.info(`Base URL: ${BASE_URL}`);
-        startBot();
+        logger.info(`Phone number for pairing: ${PHONE_NUMBER}`);
+        startBot().catch(err => {
+            logger.error('Failed to start bot:', err);
+            process.exit(1);
+        });
     });
 } catch (err) {
     console.error('Failed to load modules (check npm install):', err);
