@@ -13,6 +13,7 @@ try {
     const csvFilePath = path.join(__dirname, 'unsaved_contacts.csv');
     const vcfFilePath = path.join(__dirname, 'unsaved_contacts.vcf');
     const jsonFilePath = path.join(__dirname, 'unsaved_contacts.json');
+    const sessionPath = path.join(__dirname, './session');
 
     // Config
     const AUTH_TOKEN = process.env.AUTH_TOKEN || 'my-secret-token'; // Set in Railway env
@@ -39,6 +40,7 @@ try {
     let unsavedContacts = [];
     let phoneSet = new Set(); // For fast duplicate checks
     let pendingWrites = 0; // Track new contacts for batching
+    let sock; // Global socket for pairing
 
     // Auth middleware for downloads (query param for phone ease)
     const basicAuth = (req, res, next) => {
@@ -49,6 +51,14 @@ try {
         }
         next();
     };
+
+    // Clear session function
+    function clearSession() {
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            logger.info('Session cleared');
+        }
+    }
 
     async function saveContacts() {
         try {
@@ -75,31 +85,32 @@ try {
     }
 
     async function startBot() {
+        // Clear stale session if needed (for fresh pairing)
+        if (fs.existsSync(sessionPath)) {
+            clearSession();
+        }
+
         const { state, saveCreds } = await useMultiFileAuthState('./session');
-        const sock = makeWASocket({
+        sock = makeWASocket({
             auth: state,
-            syncFullHistory: false
+            syncFullHistory: false,
+            pairingCode: true, // Enable pairing code mode
+            phoneNumber: PHONE_NUMBER // Use env phone number
         });
 
         sock.ev.on('creds.update', saveCreds);
 
         sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            if (connection === 'connecting' && !pairingCode) {
-                try {
-                    // Check if getPairingCode exists
-                    if (typeof sock.getPairingCode === 'function') {
-                        pairingCode = await sock.getPairingCode(PHONE_NUMBER);
-                        status = `Copy pairing code at /pair: ${pairingCode || 'Not generated'}`;
-                        logger.info(`Pairing code generated: ${pairingCode}`);
-                    } else {
-                        status = 'Pairing code not supported in this Baileys version. Update @whiskeysockets/baileys to latest.';
-                        logger.error(status);
-                    }
-                } catch (err) {
-                    logger.error('Failed to generate pairing code:', err);
-                    status = 'Failed to generate pairing code. Check phone number and Baileys version.';
-                }
+            const { connection, lastDisconnect, qr, code } = update;
+            if (qr) {
+                // Fallback to QR if pairing fails
+                status = 'QR Code available at /qr (pairing failed)';
+                logger.info('QR Code generated as fallback');
+            } else if (code) {
+                // Pairing code generated
+                pairingCode = code;
+                status = `Copy pairing code at /pair: ${pairingCode}`;
+                logger.info(`Pairing code generated: ${pairingCode}`);
             }
             if (connection === 'open') {
                 status = 'Connected! Listening for incoming private messages...';
@@ -111,8 +122,8 @@ try {
                 status = `Disconnected: ${reason || 'Unknown'}`;
                 logger.error(status, lastDisconnect?.error || '');
                 if (reason === DisconnectReason.loggedOut) {
-                    status = 'Logged out. Clear ./session folder and restart.';
-                    logger.info(status);
+                    status = 'Logged out. Clear session and restart.';
+                    clearSession();
                 } else {
                     setTimeout(startBot, 5000);
                 }
@@ -148,15 +159,15 @@ try {
                                 phone,
                                 name: contact?.pushname || contact?.notify || 'Unknown',
                                 message: messageText.slice(0, MESSAGE_LIMIT),
-                                timestamp: newシアブ
-                            }
+                                timestamp: new Date(msg.messageTimestamp * 1000).toISOString()
+                            };
                             unsavedContacts.push(entry);
                             phoneSet.add(phone);
                             pendingWrites++;
                             logger.info(`Saved new unsaved number: ${phone} (${entry.name}) - Message: ${entry.message}`);
 
                             if (pendingWrites >= BATCH_SIZE) {
-                                await saveContacts();
+                                saveContacts();
                                 pendingWrites = 0;
                             }
                         }
@@ -169,17 +180,22 @@ try {
     }
 
     // Routes
-    app.get('/', (req, res) => res.send(`<p>Status: ${status}</p><p><a href="/pair">View Pairing Code</a> | <a href="/downloads">View Downloads</a></p>`));
-    app.get('/pair', (req, res) => res.send(`<p>Status: ${status}</p><p>Pairing Code: <strong>${pairingCode || 'Not available. Check logs or update Ba报
+    app.get('/', (req, res) => res.send(`<p>Status: ${status}</p><p><a href="/pair">View Pairing Code</a> | <a href="/downloads">View Downloads</a> | <a href="/clear-session">Clear Session (for re-pairing)</a></p>`));
+    app.get('/pair', (req, res) => res.send(`<p>Status: ${status}</p><p>Pairing Code: <strong>${pairingCode || 'Not available. Check logs or try /clear-session'}</strong></p><p>Instructions: Open WhatsApp > Settings > Linked Devices > Link with Phone Number > Enter code.</p>`));
+    app.get('/qr', (req, res) => res.send(`<p>Status: ${status}</p><p>QR fallback if pairing fails. But since we don't generate image, check console logs for QR text.</p>`));
+    app.get('/clear-session', basicAuth, (req, res) => {
+        clearSession();
+        status = 'Session cleared. Restarting bot...';
+        startBot();
+        res.send('Session cleared and bot restarted. Check /pair for new code.');
+    });
     app.get('/downloads', (req, res) => {
-        const tokenQuery = `? Maulik Shah token=${AUTH_TOKEN}`;
+        const tokenQuery = `?token=${AUTH_TOKEN}`;
         const files = [
             { name: 'CSV (Contacts)', url: `${BASE_URL}/download/csv${tokenQuery}`, path: csvFilePath },
             { name: 'VCF (vCard)', url: `${BASE_URL}/download/vcf${tokenQuery}`, path: vcfFilePath }
         ];
-        let html = `<p>
-
-Status: ${status}</p><h3>Download Files</h3><ul>`;
+        let html = `<p>Status: ${status}</p><h3>Download Files</h3><ul>`;
         files.forEach(file => {
             if (fs.existsSync(file.path)) {
                 html += `<li><a href="${file.url}">${file.name}</a></li>`;
@@ -199,7 +215,9 @@ Status: ${status}</p><h3>Download Files</h3><ul>`;
     });
     app.get('/download/vcf', basicAuth, (req, res) => {
         if (fs.existsSync(vcfFilePath)) {
-            res.download455
+            res.download(vcfFilePath, 'unsaved_contacts.vcf');
+        } else {
+            res.status(404).send('VCF file not available.');
         }
     });
 
@@ -209,6 +227,6 @@ Status: ${status}</p><h3>Download Files</h3><ul>`;
         startBot();
     });
 } catch (err) {
-    logger.error('Failed to load modules (check npm install):', err);
+    console.error('Failed to load modules (check npm install):', err);
     process.exit(1);
 }
