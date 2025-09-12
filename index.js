@@ -4,6 +4,7 @@ try {
     const fs = require('fs');
     const path = require('path');
     const fastcsv = require('fast-csv');
+    const QRCode = require('qrcode');
 
     const app = express();
     const port = process.env.PORT || 8080;
@@ -12,6 +13,7 @@ try {
     const csvFilePath = path.join(__dirname, 'unsaved_contacts.csv');
     const vcfFilePath = path.join(__dirname, 'unsaved_contacts.vcf');
     const jsonFilePath = path.join(__dirname, 'unsaved_contacts.json');
+    const qrFilePath = path.join(__dirname, 'qr.png');
 
     let status = 'Initializing...';
     let qrCode = '';
@@ -21,8 +23,7 @@ try {
         const { state, saveCreds } = await useMultiFileAuthState('./session');
         const sock = makeWASocket({
             auth: state,
-            printQRInTerminal: true,
-            syncFullHistory: false
+            syncFullHistory: false // Remove printQRInTerminal to kill warning
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -31,12 +32,19 @@ try {
             const { connection, lastDisconnect, qr } = update;
             if (qr) {
                 qrCode = qr;
-                status = 'Scan QR code at /qr';
+                status = 'Scan QR code at /download/qr';
                 console.log('QR CODE:', qr);
+                // Generate QR image
+                QRCode.toFile(qrFilePath, qr, { type: 'png', errorCorrectionLevel: 'H' }, (err) => {
+                    if (err) console.error('QR image generation failed:', err);
+                    else console.log('QR image saved:', qrFilePath);
+                });
             }
             if (connection === 'open') {
                 status = 'Connected! Listening for incoming private messages...';
                 console.log(status);
+                // Clear old QR file
+                if (fs.existsSync(qrFilePath)) fs.unlinkSync(qrFilePath);
             }
             if (connection === 'close') {
                 const reason = lastDisconnect?.error?.output?.statusCode;
@@ -104,7 +112,14 @@ try {
 
     // Routes
     app.get('/', (req, res) => res.send(status));
-    app.get('/qr', (req, res) => res.send(`<p>${status}</p><p>Copy QR from logs: ${qrCode}</p><p>Generate at qrcode-monkey.com</p>`));
+    app.get('/qr', (req, res) => res.send(`<p>${status}</p><p><a href="/download/qr">Download QR Code Image</a></p>`));
+    app.get('/download/qr', (req, res) => {
+        if (fs.existsSync(qrFilePath)) {
+            res.download(qrFilePath, 'qr.png');
+        } else {
+            res.status(404).send('QR code not available. Check logs for new QR.');
+        }
+    });
     app.get('/download/csv', (req, res) => res.download(csvFilePath, 'unsaved_contacts.csv'));
     app.get('/download/vcf', (req, res) => res.download(vcfFilePath, 'unsaved_contacts.vcf'));
 

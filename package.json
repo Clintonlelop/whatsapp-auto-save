@@ -8,6 +8,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc.2",
     "express": "^4.19.2",
-    "fast-csv": "^5.0.1"
+    "fast-csv": "^5.0.1",
+    "qrcode": "^1.5.3"
   }
 }
