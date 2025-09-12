@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@adiwajshing/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, jidDecode } = require('baileys');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -54,39 +54,45 @@ async function startBot() {
         try {
             for (const msg of messages) {
                 if (!msg.key.fromMe && msg.key.remoteJid.endsWith('@s.whatsapp.net')) {
-                    const phone = msg.key.remoteJid.split('@')[0];
-                    const contact = await sock.getContactById(msg.key.remoteJid);
-                    if (!contact.isMyContact) {
-                        const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 'No text';
-                        const entry = {
-                            phone,
-                            name: contact.notifyName || contact.name || 'Unknown',
-                            message: messageText.slice(0, 50), // First 50 chars
-                            timestamp: new Date(msg.messageTimestamp * 1000).toISOString()
-                        };
-                        if (!unsavedContacts.some(c => c.phone === phone)) {
-                            unsavedContacts.push(entry);
-                            console.log(`Saved: ${phone} (${entry.name})`);
+                    const remoteJid = msg.key.remoteJid;
+                    const phone = jidDecode(remoteJid)?.user || remoteJid.split('@')[0];
+                    try {
+                        const contact = await sock.fetchContactByJid(remoteJid); // Updated for v7
+                        // Check if unsaved (no verifiedName or pushname indicates unsaved)
+                        if (!contact.verifiedName && !contact.name) { // Proxy for isMyContact: false
+                            const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || 'No text';
+                            const entry = {
+                                phone,
+                                name: contact.pushname || contact.notify || 'Unknown',
+                                message: messageText.slice(0, 50), // First 50 chars
+                                timestamp: new Date(msg.messageTimestamp * 1000).toISOString()
+                            };
+                            if (!unsavedContacts.some(c => c.phone === phone)) {
+                                unsavedContacts.push(entry);
+                                console.log(`Saved: ${phone} (${entry.name})`);
 
-                            // Save JSON
-                            fs.writeFileSync(jsonFilePath, JSON.stringify(unsavedContacts, null, 2));
+                                // Save JSON
+                                fs.writeFileSync(jsonFilePath, JSON.stringify(unsavedContacts, null, 2));
 
-                            // Save CSV
-                            const ws = fs.createWriteStream(csvFilePath);
-                            fastcsv.write(unsavedContacts, { headers: ['phone', 'name', 'message', 'timestamp'] })
-                                .pipe(ws)
-                                .on('finish', () => console.log(`CSV saved: ${csvFilePath}`));
+                                // Save CSV
+                                const ws = fs.createWriteStream(csvFilePath);
+                                fastcsv.write(unsavedContacts, { headers: ['phone', 'name', 'message', 'timestamp'] })
+                                    .pipe(ws)
+                                    .on('finish', () => console.log(`CSV saved: ${csvFilePath}`));
 
-                            // Save VCF
-                            let vcfContent = '';
-                            unsavedContacts.forEach(c => {
-                                vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:${c.name}\nTEL;TYPE=CELL:${c.phone}\nNOTE:From WhatsApp Message: ${c.message}\nEND:VCARD\n`;
-                            });
-                            fs.writeFileSync(vcfFilePath, vcfContent.trim());
-                            console.log(`VCF saved: ${vcfFilePath}`);
+                                // Save VCF
+                                let vcfContent = '';
+                                unsavedContacts.forEach(c => {
+                                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:${c.name}\nTEL;TYPE=CELL:${c.phone}\nNOTE:From WhatsApp Message: ${c.message}\nEND:VCARD\n`;
+                                });
+                                fs.writeFileSync(vcfFilePath, vcfContent.trim());
+                                console.log(`VCF saved: ${vcfFilePath}`);
 
-                            status = `Saved ${unsavedContacts.length} contacts. Download: /download/csv or /download/vcf`;
+                                status = `Saved ${unsavedContacts.length} contacts. Download: /download/csv or /download/vcf`;
+                            }
                         }
+                    } catch (contactErr) {
+                        console.error('Error fetching contact:', contactErr);
                     }
                 }
             }
